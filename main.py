@@ -1,5 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional, List
 import httpx
 
 app = FastAPI(title="Microsserviço de Integração GitHub")
@@ -14,6 +16,16 @@ app.add_middleware(
 
 # Base URL oficial da API do GitHub
 GITHUB_API_URL = "https://api.github.com"
+# URL do seu microsserviço de Ingestão (Ajuste a porta se necessário)
+INGESTAO_SERVICE_URL = "http://ingestaomod2.azurewebsites.net" 
+
+# DTO para a nova rota de importação
+class ImportarRepoDTO(BaseModel):
+    owner: str
+    repo: str
+    projeto_id: int
+    branch: Optional[str] = "main"
+    token: Optional[str] = None
 
 
 @app.get("/")
@@ -76,3 +88,91 @@ async def listar_pull_requests(usuario: str, repositorio: str):
             for pr in prs_github
         ]
         return dados_limpos
+
+async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projeto_id: int, token: Optional[str]):
+    """
+    Função em background que baixa os arquivos do GitHub e encaminha 
+    para o microsserviço de Ingestão.
+    """
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    # 1. Busca a árvore completa de arquivos de forma recursiva
+    tree_url = f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(tree_url, headers=headers)
+            if response.status_code != 200:
+                print(f"Erro ao buscar árvore do GitHub: {response.text}")
+                return
+
+            tree_data = response.json()
+            # Formatos permitidos pela regra de negócio do Domínio de Ingestão
+            formatos_permitidos = ['pdf', 'txt', 'docx', 'csv']
+
+            for item in tree_data.get("tree", []):
+                # Validar se o item é um arquivo (blob) e não uma pasta (tree)
+                if item.get("type") == "blob":
+                    path = item.get("path")
+                    nome_arquivo = path.split('/')[-1]
+                    extensao = nome_arquivo.split('.')[-1].lower() if '.' in nome_arquivo else ''
+
+                    if extensao in formatos_permitidos:
+                        # 2. Baixa o conteúdo bruto (raw) do arquivo do GitHub
+                        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+                        raw_response = await client.get(raw_url)
+
+                        if raw_response.status_code == 200:
+                            # 3. Encaminha o arquivo fisicamente para o Microsserviço de Ingestão
+                            files = {
+                                'file': (nome_arquivo, raw_response.content, f'application/{extensao}')
+                            }
+                            
+                            ingestao_url = f"{INGESTAO_SERVICE_URL}/api/postarquivos/projeto/{projeto_id}"
+                            upload_response = await client.post(ingestao_url, files=files)
+                            
+                            if upload_response.status_code == 200:
+                                print(f"Arquivo {nome_arquivo} importado e enviado com sucesso.")
+                            else:
+                                print(f"Falha ao enviar {nome_arquivo} para Ingestão: {upload_response.text}")
+        
+        except Exception as e:
+            print(f"Erro crítico durante o processamento do GitHub: {str(e)}")
+
+
+@app.post("/api/github/importar")
+async def importar_repositorio(payload: ImportarRepoDTO, background_tasks: BackgroundTasks):
+    """
+    Endpoint principal. Ele recebe as informações do repositório, valida a existência
+    e dispara uma tarefa em segundo plano para não travar a requisição do usuário.
+    """
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if payload.token:
+        headers["Authorization"] = f"token {payload.token}"
+
+    # Validação inicial rápida: O repositório existe?
+    repo_url = f"{GITHUB_API_URL}/repos/{payload.owner}/{payload.repo}"
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(repo_url, headers=headers)
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Repositório não encontrado no GitHub.")
+        elif response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail="Erro ao validar repositório no GitHub.")
+
+    # Dispara o download e envio dos arquivos em Background
+    background_tasks.add_task(
+        processar_e_enviar_arquivos,
+        payload.owner,
+        payload.repo,
+        payload.branch,
+        payload.projeto_id,
+        payload.token
+    )
+
+    return {
+        "status": "processando",
+        "mensagem": f"A importação do repositório {payload.owner}/{payload.repo} foi iniciada em segundo plano."
+    }
