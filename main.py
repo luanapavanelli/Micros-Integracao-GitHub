@@ -16,7 +16,8 @@ app.add_middleware(
 
 # Base URL oficial da API do GitHub
 GITHUB_API_URL = "https://api.github.com"
-# URL do seu microsserviço de Ingestão (Ajuste a porta se necessário)
+
+# URL do seu microsserviço de Ingestão (Com HTTPS e SEM a barra / no final)
 INGESTAO_SERVICE_URL = "https://ingestaomod2.azurewebsites.net" 
 
 # DTO para a nova rota de importação
@@ -124,15 +125,19 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
                         raw_response = await client.get(raw_url)
 
                         if raw_response.status_code == 200:
+                            
+                            # Prepara o projeto_id como dado de formulário
                             dados_formulario = {
                                 "projeto_id": str(projeto_id)
                             }
                             
+                            # Prepara o arquivo como multipart
                             arquivos_multipart = {
                                 'file': (nome_arquivo, raw_response.content, f'application/{extensao}')
                             }
                             
-                            ingestao_url = f"{INGESTAO_SERVICE_URL}/api/arquivos/"
+                            # Endpoint exato do microsserviço de Ingestão
+                            ingestao_url = f"{INGESTAO_SERVICE_URL}/api/arquivos"
                             
                             upload_response = await client.post(
                                 ingestao_url, 
