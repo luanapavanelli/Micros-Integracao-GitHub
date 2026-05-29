@@ -126,22 +126,16 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
 
                         if raw_response.status_code == 200:
                             
-                            # Prepara o projeto_id como dado de formulário
-                            dados_formulario = {
-                                "projeto_id": str(projeto_id)
-                            }
-                            
                             # Prepara o arquivo como multipart
                             arquivos_multipart = {
                                 'file': (nome_arquivo, raw_response.content, f'application/{extensao}')
                             }
                             
                             # Endpoint exato do microsserviço de Ingestão
-                            ingestao_url = f"{INGESTAO_SERVICE_URL}/api/arquivos"
+                            ingestao_url = f"{INGESTAO_SERVICE_URL}/api/postararquivos/projeto/{projeto_id}"
                             
                             upload_response = await client.post(
                                 ingestao_url, 
-                                data=dados_formulario, 
                                 files=arquivos_multipart
                             )
                             
