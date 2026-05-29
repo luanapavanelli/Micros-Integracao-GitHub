@@ -17,7 +17,7 @@ app.add_middleware(
 # Base URL oficial da API do GitHub
 GITHUB_API_URL = "https://api.github.com"
 # URL do seu microsserviço de Ingestão (Ajuste a porta se necessário)
-INGESTAO_SERVICE_URL = "http://ingestaomod2.azurewebsites.net" 
+INGESTAO_SERVICE_URL = "https://ingestaomod2.azurewebsites.net" 
 
 # DTO para a nova rota de importação
 class ImportarRepoDTO(BaseModel):
