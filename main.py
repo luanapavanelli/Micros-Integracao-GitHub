@@ -112,7 +112,15 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
             print(f"Erro crítico ao acessar árvore do GitHub: {str(e)}")
             return
 
-        formatos_permitidos = ['pdf', 'txt', 'docx', 'csv']
+        formatos_permitidos = [
+            # Documentos
+            'pdf', 'txt', 'docx', 'doc', 'odt', 'rtf', 'md',
+            # Dados
+            'csv', 'json', 'xlsx', 'xls', 'yaml', 'yml', 'xml',
+            # Código-Fonte
+            'py', 'js', 'ts', 'html', 'css', 'java', 'cpp', 'c', 'h', 
+            'cs', 'go', 'rs', 'php', 'rb', 'sh'
+        ]
 
         # Percorremos cada item da árvore do repositório
         for item in tree_data.get("tree", []):
