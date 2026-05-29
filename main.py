@@ -110,7 +110,11 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
 
             tree_data = response.json()
             # Formatos permitidos pela regra de negócio do Domínio de Ingestão
-            formatos_permitidos = ['pdf', 'txt', 'docx', 'csv']
+            formatos_permitidos = [
+            'pdf', 'txt', 'docx', 'csv', 'json', 'xlsx', 'xls', 'yaml', 'yml', 
+            'xml', 'py', 'js', 'ts', 'html', 'css', 'java', 'cpp', 'c', 'h', 
+            'cs', 'go', 'rs', 'php', 'rb', 'sh'
+            ]
 
             for item in tree_data.get("tree", []):
                 # Validar se o item é um arquivo (blob) e não uma pasta (tree)
