@@ -36,7 +36,7 @@ def home():
 @app.get("/repositorios/{usuario}")
 async def listar_repositorios(usuario: str):
     """ Busca repositórios públicos de um usuário """
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         resposta = await client.get(f"{GITHUB_API_URL}/users/{usuario}/repos")
 
         if resposta.status_code != 200:
@@ -52,7 +52,7 @@ async def listar_repositorios(usuario: str):
 @app.get("/repositorios/{usuario}/{repositorio}/branches")
 async def listar_branches(usuario: str, repositorio: str):
     """ Busca todas as branches de um repositório específico """
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         resposta = await client.get(f"{GITHUB_API_URL}/repos/{usuario}/{repositorio}/branches")
 
         if resposta.status_code != 200:
@@ -60,7 +60,6 @@ async def listar_branches(usuario: str, repositorio: str):
 
         branches_github = resposta.json()
 
-        # Filtramos para devolver apenas o nome da branch
         dados_limpos = [{"nome": branch["name"]} for branch in branches_github]
         return dados_limpos
 
@@ -68,8 +67,7 @@ async def listar_branches(usuario: str, repositorio: str):
 @app.get("/repositorios/{usuario}/{repositorio}/prs")
 async def listar_pull_requests(usuario: str, repositorio: str):
     """ Busca os Pull Requests (Abertos e Fechados) de um repositório """
-    async with httpx.AsyncClient() as client:
-        # O parâmetro ?state=all garante que vem tanto os PRs abertos quanto os fechados
+    async with httpx.AsyncClient(timeout=20.0) as client:
         resposta = await client.get(f"{GITHUB_API_URL}/repos/{usuario}/{repositorio}/pulls?state=all")
 
         if resposta.status_code != 200:
@@ -77,7 +75,6 @@ async def listar_pull_requests(usuario: str, repositorio: str):
 
         prs_github = resposta.json()
 
-        # Limpamos os dados do GitHub para o que importa para a tela
         dados_limpos = [
             {
                 "titulo": pr["title"],
@@ -89,6 +86,7 @@ async def listar_pull_requests(usuario: str, repositorio: str):
         ]
         return dados_limpos
 
+
 async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projeto_id: int, token: Optional[str]):
     """
     Função em background que baixa os arquivos do GitHub e encaminha 
@@ -98,37 +96,9 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
     if token:
         headers["Authorization"] = f"token {token}"
 
-    # 1. Busca a árvore completa de arquivos de forma recursiva
     tree_url = f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
     
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(tree_url, headers=headers)
-            if response.status_code != 200:
-                print(f"Erro ao buscar árvore do GitHub: {response.text}")
-                return
-
-            tree_data = response.json()
-            # Formatos permitidos pela regra de negócio do Domínio de Ingestão
-            formatos_permitidos = [
-            'pdf', 'txt', 'docx', 'csv', 'json', 'xlsx', 'xls', 'yaml', 'yml', 
-            'xml', 'py', 'js', 'ts', 'html', 'css', 'java', 'cpp', 'c', 'h', 
-            'cs', 'go', 'rs', 'php', 'rb', 'sh'
-            ]
-
-            async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projeto_id: int, token: Optional[str]):
-    """
-    Função em background que baixa os arquivos do GitHub e encaminha 
-    para o microsserviço de Ingestão.
-    """
-    headers = {"Accept": "application/vnd.github.v3+json"}
-    if token:
-        headers["Authorization"] = f"token {token}"
-
-    # 1. Busca a árvore completa de arquivos de forma recursiva
-    tree_url = f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-    
-    # CORREÇÃO 1: Aumentado o timeout para 60 segundos para evitar quedas em repositórios grandes
+    # Timeout de 60s para varrer o GitHub sem cair
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.get(tree_url, headers=headers)
@@ -142,6 +112,7 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
                 'xml', 'py', 'js', 'ts', 'html', 'css', 'java', 'cpp', 'c', 'h', 
                 'cs', 'go', 'rs', 'php', 'rb', 'sh'
             ]
+            
             for item in tree_data.get("tree", []):
                 if item.get("type") == "blob":
                     path = item.get("path")
@@ -149,26 +120,20 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
                     extensao = nome_arquivo.split('.')[-1].lower() if '.' in nome_arquivo else ''
 
                     if extensao in formatos_permitidos:
-                        # 2. Baixa o conteúdo bruto (raw) do arquivo do GitHub
                         raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
                         raw_response = await client.get(raw_url)
 
                         if raw_response.status_code == 200:
-                            
-                            # CORREÇÃO 2: O FastAPI exige o projeto_id como um campo de formulário (Form)
                             dados_formulario = {
                                 "projeto_id": str(projeto_id)
                             }
                             
-                            # O arquivo vai na chave 'file'
                             arquivos_multipart = {
                                 'file': (nome_arquivo, raw_response.content, f'application/{extensao}')
                             }
                             
-                            # CORREÇÃO 3: Rota exata do nosso microsserviço de Ingestão
                             ingestao_url = f"{INGESTAO_SERVICE_URL}/api/arquivos/"
                             
-                            # Enviamos o 'data' E o 'files' juntos
                             upload_response = await client.post(
                                 ingestao_url, 
                                 data=dados_formulario, 
@@ -176,9 +141,9 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
                             )
                             
                             if upload_response.status_code == 200:
-                                print(f"Arquivo {nome_arquivo} importado e enviado com sucesso.")
+                                print(f"Arquivo {nome_arquivo} importado com sucesso.")
                             else:
-                                print(f"Falha ao enviar {nome_arquivo} para Ingestão: {upload_response.status_code} - {upload_response.text}")
+                                print(f"Falha na Ingestão de {nome_arquivo}: {upload_response.status_code} - {upload_response.text}")
         
         except Exception as e:
             print(f"Erro crítico durante o processamento do GitHub: {str(e)}")
@@ -194,17 +159,15 @@ async def importar_repositorio(payload: ImportarRepoDTO, background_tasks: Backg
     if payload.token:
         headers["Authorization"] = f"token {payload.token}"
 
-    # Validação inicial rápida: O repositório existe?
     repo_url = f"{GITHUB_API_URL}/repos/{payload.owner}/{payload.repo}"
     
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.get(repo_url, headers=headers)
         if response.status_code == 404:
             raise HTTPException(status_code=404, detail="Repositório não encontrado no GitHub.")
         elif response.status_code != 200:
             raise HTTPException(status_code=response.status_code, detail="Erro ao validar repositório no GitHub.")
 
-    # Dispara o download e envio dos arquivos em Background
     background_tasks.add_task(
         processar_e_enviar_arquivos,
         payload.owner,
