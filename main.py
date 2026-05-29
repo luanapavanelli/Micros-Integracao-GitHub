@@ -3,6 +3,14 @@ import httpx
 
 app = FastAPI(title="Microsserviço de Integração GitHub")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Base URL oficial da API do GitHub
 GITHUB_API_URL = "https://api.github.com"
 
