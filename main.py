@@ -116,8 +116,33 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
             'cs', 'go', 'rs', 'php', 'rb', 'sh'
             ]
 
+            async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projeto_id: int, token: Optional[str]):
+    """
+    Função em background que baixa os arquivos do GitHub e encaminha 
+    para o microsserviço de Ingestão.
+    """
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    # 1. Busca a árvore completa de arquivos de forma recursiva
+    tree_url = f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+    
+    # CORREÇÃO 1: Aumentado o timeout para 60 segundos para evitar quedas em repositórios grandes
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.get(tree_url, headers=headers)
+            if response.status_code != 200:
+                print(f"Erro ao buscar árvore do GitHub: {response.text}")
+                return
+
+            tree_data = response.json()
+            formatos_permitidos = [
+                'pdf', 'txt', 'docx', 'csv', 'json', 'xlsx', 'xls', 'yaml', 'yml', 
+                'xml', 'py', 'js', 'ts', 'html', 'css', 'java', 'cpp', 'c', 'h', 
+                'cs', 'go', 'rs', 'php', 'rb', 'sh'
+            ]
             for item in tree_data.get("tree", []):
-                # Validar se o item é um arquivo (blob) e não uma pasta (tree)
                 if item.get("type") == "blob":
                     path = item.get("path")
                     nome_arquivo = path.split('/')[-1]
@@ -129,18 +154,31 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
                         raw_response = await client.get(raw_url)
 
                         if raw_response.status_code == 200:
-                            # 3. Encaminha o arquivo fisicamente para o Microsserviço de Ingestão
-                            files = {
+                            
+                            # CORREÇÃO 2: O FastAPI exige o projeto_id como um campo de formulário (Form)
+                            dados_formulario = {
+                                "projeto_id": str(projeto_id)
+                            }
+                            
+                            # O arquivo vai na chave 'file'
+                            arquivos_multipart = {
                                 'file': (nome_arquivo, raw_response.content, f'application/{extensao}')
                             }
                             
-                            ingestao_url = f"{INGESTAO_SERVICE_URL}/api/postarquivos/projeto/{projeto_id}"
-                            upload_response = await client.post(ingestao_url, files=files)
+                            # CORREÇÃO 3: Rota exata do nosso microsserviço de Ingestão
+                            ingestao_url = f"{INGESTAO_SERVICE_URL}/api/arquivos/"
+                            
+                            # Enviamos o 'data' E o 'files' juntos
+                            upload_response = await client.post(
+                                ingestao_url, 
+                                data=dados_formulario, 
+                                files=arquivos_multipart
+                            )
                             
                             if upload_response.status_code == 200:
                                 print(f"Arquivo {nome_arquivo} importado e enviado com sucesso.")
                             else:
-                                print(f"Falha ao enviar {nome_arquivo} para Ingestão: {upload_response.text}")
+                                print(f"Falha ao enviar {nome_arquivo} para Ingestão: {upload_response.status_code} - {upload_response.text}")
         
         except Exception as e:
             print(f"Erro crítico durante o processamento do GitHub: {str(e)}")
