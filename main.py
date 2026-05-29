@@ -61,7 +61,6 @@ async def listar_branches(usuario: str, repositorio: str):
 
         branches_github = resposta.json()
 
-        # Filtramos para devolver apenas o nome da branch
         dados_limpos = [{"nome": branch["name"]} for branch in branches_github]
         return dados_limpos
 
@@ -70,7 +69,6 @@ async def listar_branches(usuario: str, repositorio: str):
 async def listar_pull_requests(usuario: str, repositorio: str):
     """ Busca os Pull Requests (Abertos e Fechados) de um repositório """
     async with httpx.AsyncClient() as client:
-        # O parâmetro ?state=all garante que vem tanto os PRs abertos quanto os fechados
         resposta = await client.get(f"{GITHUB_API_URL}/repos/{usuario}/{repositorio}/pulls?state=all")
 
         if resposta.status_code != 200:
@@ -78,7 +76,6 @@ async def listar_pull_requests(usuario: str, repositorio: str):
 
         prs_github = resposta.json()
 
-        # Limpamos os dados do GitHub para o que importa para a tela
         dados_limpos = [
             {
                 "titulo": pr["title"],
@@ -99,44 +96,48 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
     if token:
         headers["Authorization"] = f"token {token}"
 
-    # 1. Busca a árvore completa de arquivos de forma recursiva
     tree_url = f"{GITHUB_API_URL}/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
     
-    async with httpx.AsyncClient() as client:
+    # Criamos o client com timeouts maiores porque a importação pode demorar em repositórios grandes
+    async with httpx.AsyncClient(timeout=60.0) as client:
         try:
+            # 1. Busca a árvore completa de arquivos de forma recursiva
             response = await client.get(tree_url, headers=headers)
             if response.status_code != 200:
                 print(f"Erro ao buscar árvore do GitHub: {response.text}")
                 return
 
             tree_data = response.json()
-            # Formatos permitidos pela regra de negócio do Domínio de Ingestão
-            formatos_permitidos = ['pdf', 'txt', 'docx', 'csv']
+        except Exception as e:
+            print(f"Erro crítico ao acessar árvore do GitHub: {str(e)}")
+            return
 
-            for item in tree_data.get("tree", []):
-                # Validar se o item é um arquivo (blob) e não uma pasta (tree)
-                if item.get("type") == "blob":
-                    path = item.get("path")
-                    nome_arquivo = path.split('/')[-1]
-                    extensao = nome_arquivo.split('.')[-1].lower() if '.' in nome_arquivo else ''
+        formatos_permitidos = ['pdf', 'txt', 'docx', 'csv']
 
-                    if extensao in formatos_permitidos:
-                        # 2. Baixa o conteúdo bruto (raw) do arquivo do GitHub
+        # Percorremos cada item da árvore do repositório
+        for item in tree_data.get("tree", []):
+            if item.get("type") == "blob":
+                path = item.get("path")
+                nome_arquivo = path.split('/')[-1]
+                extensao = nome_arquivo.split('.')[-1].lower() if '.' in nome_arquivo else ''
+
+                if extensao in formatos_permitidos:
+                    # Agora o TRY/EXCEPT está DENTRO DO LOOP para CADA ARQUIVO INDIVIDUAL. 
+                    # Se 1 falhar, ele apenas loga o erro e pula pro próximo!
+                    try:
                         raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
                         
-                        # CORREÇÃO APLICADA AQUI: Passando os headers para baixar arquivos de repositórios privados
                         raw_response = await client.get(raw_url, headers=headers)
 
                         if raw_response.status_code == 200:
                             # 3. Encaminha o arquivo fisicamente para o Microsserviço de Ingestão
+                            # Simplificamos o envio para que a biblioteca detecte o Content-Type automaticamente
                             files = {
-                                'file': (nome_arquivo, raw_response.content, f'application/{extensao}')
+                                'file': (nome_arquivo, raw_response.content)
                             }
                             
                             ingestao_url = f"{INGESTAO_SERVICE_URL}/api/postarquivos/projeto/{projeto_id}"
-                            
-                            # Aumentando o timeout para não estourar em arquivos maiores
-                            upload_response = await client.post(ingestao_url, files=files, timeout=60.0)
+                            upload_response = await client.post(ingestao_url, files=files)
                             
                             if upload_response.status_code == 200:
                                 print(f"Arquivo {nome_arquivo} importado e enviado com sucesso.")
@@ -144,9 +145,10 @@ async def processar_e_enviar_arquivos(owner: str, repo: str, branch: str, projet
                                 print(f"Falha ao enviar {nome_arquivo} para Ingestão: {upload_response.text}")
                         else:
                             print(f"Erro ao baixar arquivo do GitHub: {raw_url} (Status: {raw_response.status_code})")
-        
-        except Exception as e:
-            print(f"Erro crítico durante o processamento do GitHub: {str(e)}")
+                    
+                    except Exception as file_error:
+                        print(f"Erro isolado ao processar arquivo {nome_arquivo}: {str(file_error)}")
+                        # O loop for continuará rodando para o próximo arquivo da lista
 
 
 @app.post("/api/github/importar")
@@ -159,7 +161,6 @@ async def importar_repositorio(payload: ImportarRepoDTO, background_tasks: Backg
     if payload.token:
         headers["Authorization"] = f"token {payload.token}"
 
-    # Validação inicial rápida: O repositório existe?
     repo_url = f"{GITHUB_API_URL}/repos/{payload.owner}/{payload.repo}"
     
     async with httpx.AsyncClient() as client:
